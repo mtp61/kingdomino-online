@@ -3,9 +3,8 @@ import errno
 import pygame
 import sys
 import json
-from networking import send, \
-    receive
-from demo import tile_loader, \
+from networking import send, receive
+from shared import tile_loader, \
     king_loader, \
     draw_board, \
     draw_tile, \
@@ -15,11 +14,10 @@ from demo import tile_loader, \
     test_new_tile, \
     can_place
 
-# VERSION = 0.1
 
-# IP = "localhost
-IP = "45.79.166.253"
-PORT = 5555
+IP = "localhost"
+# IP = "45.79.166.253"
+PORT = 3331
 
 WINDOW_W = 1200
 WINDOW_H = 800
@@ -41,9 +39,7 @@ def main():
     server_data = []
 
     action = None
-
     placing = False
-
     active_game = False
 
     # main loop
@@ -71,13 +67,7 @@ def main():
                     active_game = True
             if 'message' in rec.keys():
                 print(rec['message'])
-            if 'action' in rec.keys():
-                if action != rec['action']:  # new action
-                    if action is not None:
-                        print(f"new action: {rec['action']}")
-                    action = rec['action']
-            else:
-                action = None
+            
         # all server data processed, clear the queue
         server_data = []
 
@@ -89,21 +79,24 @@ def main():
                     pygame.quit()
                     sys.exit()
 
+            # check if game over
+            if game_state['game_over']:
+                    active_game = False
+                    pygame.quit()
+                    action = None
+                    continue
+
             # actions
-            if action is not None:
-                if 'pick' in action.keys():
+            if 'action' in game_state.keys() and (game_state['action'][0] == "pick" or game_state['action'][0] == 'place'):
+                if game_state['action'][0] == "pick":
                     placing = False
-                    # remove place if picking todo fix this later
-                    #if 'place' in action.keys():
-                    #    del action['place']
-                    #    placing = False
 
                     # see if the mouse is pressed
                     if pygame.mouse.get_pressed()[0]:
                         if not mouse_was_down:
                             # see if you hit a tile todo dont hard code these, do along with better drawing
                             # get the options
-                            pick_options = list(action['pick'])
+                            pick_options = list(game_state['action'][1])
                             for n, tile in enumerate(game_state['tiles_to_pick']):
                                 if tile[1] is None:
                                     pick_options.append(n)
@@ -118,38 +111,37 @@ def main():
                                 if in_rect(mousePos, tile_x, tile_y, tile_w, tile_h):
                                     if n in pick_options:  # if the tile has not been picked
                                         print(f"picked tile {n+1}")
-                                        send(client_socket, {'pick': n})
+                                        send(client_socket, {'action': game_state['action'], "resp": n})
+                                        del game_state['action']
                                         break
                             mouse_was_down = True
                     else:
                         mouse_was_down = False
 
-                elif 'place' in action.keys():
-
-
+                elif game_state['action'][0] == "place":
                     for tile in game_state['you']['tiles']:
-                        if action['place'] == tile[0]:
+                        if game_state['action'][1] == tile[0]:
                             print('already have this tile!')
 
 
                     if not placing:
                         placing = True
-                        placing_number = action['place']
+                        placing_number = game_state['action'][1]
                         placing_direction = 'W'
                         dragging = False
                         placing_x = 550
                         placing_y = 700
 
-                        if action['place'] is None:
+                        if placing_number is None:
                             print(f"tile duplication glitch")
-                            send(client_socket, {'place': None})
+                            send(client_socket, {'action': game_state['action'], 'resp': None})
                             placing = False
-                            action['place'] = None
+                            del game_state['action']
                         elif not can_place(game_state['you']['tiles'], placing_number, tile_lookup):
                             print(f"impossible to place tile, discarding")
-                            send(client_socket, {'place': None})
+                            send(client_socket, {'action': game_state['action'], 'resp': None})
                             placing = False
-                            action['place'] = None
+                            del game_state['action']
 
                     if pygame.mouse.get_pressed()[0]:  # if mouse down
                         mousePos = pygame.mouse.get_pos()
@@ -188,11 +180,12 @@ def main():
                                 grid_y += 1
 
                             if test_new_tile(game_state['you']['tiles'], [placing_number, grid_x, grid_y, placing_direction], tile_lookup):
-
                                 game_state['you']['tiles'].append([placing_number, grid_x, grid_y, placing_direction])
-                                send(client_socket, {'place': [placing_number, grid_x, grid_y, placing_direction]})
+                                send(client_socket, {'action': game_state['action'], 'resp': [placing_number, grid_x, grid_y, placing_direction]})
                                 placing = False
-                                action['place'] = None
+
+                                # remove actoin
+                                del game_state['action']
 
                         # check for rotation
                         if pygame.key.get_pressed()[pygame.K_a]:
@@ -219,17 +212,6 @@ def main():
                         else:
                             rotation = None
 
-                        # todo why is this not working
-                        '''
-                        for event in pygame.event.get():
-                            if event.type == pygame.KEYDOWN:
-                                if event.key == pygame.K_LEFT or event.key == pygame.K_a:
-                                    rotation = 'l'
-
-                                if event.key == pygame.K_RIGHT or event.key == pygame.K_d:
-                                    rotation = 'r' 
-                        '''
-
                         if rotation is not None and rotation != 'held':  # if there is a key down
                             if rotation == 'l':
                                 if placing_direction == 'N':
@@ -253,14 +235,6 @@ def main():
                 else:
                     placing = False
 
-                if 'game_over' in action.keys():
-                    print('game over in action keys')
-                    if action['game_over']:
-                        active_game = False
-                        pygame.quit()
-                        action = None
-                        continue
-
             # draw
             screen.fill((255, 255, 255))
 
@@ -273,7 +247,6 @@ def main():
 
             # draw tiles
             # to pick
-            # todo put this in a function
             for n, tile in enumerate(game_state['tiles_to_pick']):
                 if tile[0] is not None:
                     draw_tile(screen, tile[0], 300 + 600 + 150, 0 + 50 + n * 75, 50, 'W', tile_images)
@@ -288,7 +261,6 @@ def main():
 
             # draw placing tile
             if placing:
-
                 draw_tile(screen, placing_number, placing_x, placing_y, 50, placing_direction, tile_images)
 
             # update display
@@ -300,22 +272,17 @@ def main():
 
 def start_game(window_w, window_h):
     pygame.init()
-    screen = pygame.display.set_mode((window_w, window_h))
 
+    screen = pygame.display.set_mode((window_w, window_h))
     clock = pygame.time.Clock()
 
     tile_images = tile_loader()
-
     king_images = king_loader()
 
     with open('assets/tile_lookup.json', 'r') as file:
         tile_lookup = json.loads(file.read())
 
     return screen, clock, tile_images, tile_lookup, king_images
-
-
-def send_action_complete():
-    pass
 
 
 if __name__ == "__main__":

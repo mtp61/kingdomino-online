@@ -1,19 +1,19 @@
 import random
 import copy
 import json
-from demo import calculate_score
+from shared import calculate_score
 
 
 class Game:
     def __init__(self, player_sockets, usernames):
         # random shuffle the deck
         deck = []
-        for x in range(48):
-            deck.append(x + 1)
+        for x in range(1, 49):
+            deck.append(x)
         random.shuffle(deck)
         self.deck = deck
 
-        # make player dict
+        # make players dict
         players = {}
         for x in range(len(player_sockets)):
             players[player_sockets[x]] = usernames[x]
@@ -45,16 +45,7 @@ class Game:
         self.tiles_picked = tiles_picked
 
         # setup actions
-        player_actions = {}
-        player_actions_complete = {}
-        for client_socket in player_sockets:
-            player_actions[client_socket] = None
-            player_actions_complete[client_socket] = None
-        self.player_actions = player_actions
-        self.player_actions_complete = player_actions_complete
-
-        # setup first action
-        self.player_actions[player_order[0]] = {"pick": [0, 1, 2, 3]}
+        self.actions = [(player_order[0], "pick", [0, 1, 2, 3])]
 
         # tile lookup
         with open('assets/tile_lookup.json', 'r') as file:
@@ -73,9 +64,6 @@ class Game:
         new_tiles = []
         for number in numbers:
             new_tiles.append([number, None])
-
-        if len(numbers) == 0:
-            return False
 
         return new_tiles
 
@@ -106,13 +94,16 @@ class Game:
         game_state['tiles_to_pick'] = self.tiles_to_pick
         game_state['tiles_picked'] = self.tiles_picked
 
+        # add action info
+        for action in self.actions:
+            if action[0] == client_socket:
+                game_state['action'] = action[1:]
+                break
+
+        # game over
+        game_state['game_over'] = self.game_over
+
         return game_state
-
-    def get_action(self, client_socket):
-        return self.player_actions[client_socket]
-
-    def update_action(self, client_socket, action_complete):
-        self.player_actions_complete[client_socket] = action_complete
 
     def get_scores(self, players):
         scores_str = ""
@@ -122,93 +113,96 @@ class Game:
 
         return scores_str
 
-    def game_update(self):
-        # set up useful variables
-        num_players = len(list(self.players.keys()))
+    def update_action(self, client_socket, rec):
+        # make sure it is for a real action
+        rec_action = (client_socket, rec['action'][0], rec['action'][1])
+        for action in self.actions:
+            if action == rec_action:
+                resp = rec['resp']
+                action_player = action[0]
+                if action[1] == "pick":
+                    # make sure the move is legal 
+                    # todo
+                    
+                    # remove the action
+                    self.actions.remove(action)
 
-        # process actions
-        need_update = False
-        for client_socket in self.players.keys():
-            if self.player_actions_complete[client_socket] is not None:
-                if 'pick' in list(self.player_actions_complete[client_socket].keys()):
-                    self.tiles_to_pick[self.player_actions_complete[client_socket]['pick']][1] = self.player_colors[client_socket]
+                    # set the color of the tile to pick
+                    self.tiles_to_pick[resp][1] = self.player_colors[action_player]
 
-                    # update picked tiles
-                    self.player_actions[client_socket] = None
+                    # updated picked tiles
                     for n, tile in enumerate(self.tiles_picked):
-                        if tile[1] == self.player_colors[client_socket]:
+                        if tile[1] == self.player_colors[action_player]:
                             if tile[0] is not None:
-                                # give new action
-                                self.player_actions[client_socket] = {'place': tile[0]}
+                                # give new place action
+                                self.actions.append((action_player, 'place', tile[0]))
                             self.tiles_picked[n] = [None, None]
                             break
 
-                    # let the next player pick
+                    # setup next action
                     # check if there is another player to pick
                     num_tiles_picked = 0
                     for tile in self.tiles_to_pick:
                         if tile[1] is not None:
                             num_tiles_picked += 1
-                    if num_tiles_picked < num_players:  # there are more to pick
+                    if num_tiles_picked < len(self.players.keys()):
                         # let the next player pick
                         available_tiles = []
                         for n, tile in enumerate(self.tiles_to_pick):
                             if tile[1] is None:
                                 available_tiles.append(n)
-                        self.player_actions[self.player_order[num_tiles_picked]] = {'pick': available_tiles}
+                        # add new action
+                        self.actions.append((self.player_order[num_tiles_picked], 'pick', available_tiles))
 
-                    self.player_actions_complete[client_socket] = None
+                elif action[1] == "place":
+                    # check if move legal
+                    # todo
 
-                elif 'place' in list(self.player_actions_complete[client_socket].keys()):
-                    if self.player_actions_complete[client_socket]['place'] is not None:
-                        self.player_tiles[client_socket].append(self.player_actions_complete[client_socket]['place'])
-                    self.player_actions_complete[client_socket] = None
-                    self.player_actions[client_socket] = None
+                    # remove the action
+                    self.actions.remove(action)
 
-                need_update = True
+                    # add tile if not pass
+                    if resp is not None:
+                        self.player_tiles[action_player].append(resp)
+                    
 
-        # update the game
-        if need_update:
-            # see if we are waiting for actions to be completed
-            actions_complete = True
-            for client_socket in self.players.keys():
-                if self.player_actions[client_socket] is not None:
-                    actions_complete = False
-                    break
-            if actions_complete:
-                print(f"stepping the game forward")
-                # make the old to pick the new picked
-                self.player_order = []  # reset the player order
-                self.tiles_picked = []
-                for n, tile in enumerate(self.tiles_to_pick):
-                    if tile[1] is not None:
-                        self.tiles_picked.append(copy.deepcopy(tile))
-                        for client_socket in self.players.keys():
-                            if self.player_colors[client_socket] == tile[1]:
-                                self.player_order.append(client_socket)
+    def game_update(self):
+        # setup useful variables
+        num_players = len(list(self.players.keys()))
+
+        # make sure all actions are done
+        if len(self.actions) == 0:  # need to update game and provide new action
+            # make the old to pick the new picked
+            self.player_order = []  # reset the player order
+            self.tiles_picked = []  # reset picked tiles
+            for n, tile in enumerate(self.tiles_to_pick):
+                if tile[1] is not None:
+                    self.tiles_picked.append(copy.deepcopy(tile))
+                    for client_socket in self.players.keys():
+                        if self.player_colors[client_socket] == tile[1]:
+                            self.player_order.append(client_socket)
+                            break
+            
+            # draw new tiles and check if the game is over
+            self.tiles_to_pick = self.draw_tiles()
+            if len(self.tiles_to_pick) == 0:  # if there are no more tiles
+                # empty tiles to pick
+                self.tiles_to_pick = []
+                for x in range(4):
+                    self.tiles_to_pick.append([None, None])
+
+                # if there are no tiles to place game over
+                if len(self.tiles_picked) == 0 and len(self.actions) == 0:                        
+                    self.game_over = True
+                else:
+                    # send action to place
+                    for client_socket in self.players.keys():
+                        for tile in self.tiles_picked:
+                            if tile[1] == self.player_colors[client_socket]:
+                                self.actions.append((client_socket, 'place', tile[0]))
                                 break
 
-                # draw new cards
-                self.tiles_to_pick = self.draw_tiles()
-                if self.tiles_to_pick == False:  # if there are no more tiles
-                    self.tiles_to_pick = []
-                    for x in range(4):
-                        self.tiles_to_pick.append([None, None])
+                    self.tiles_picked = []
 
-                    # if there are no tiles to place game over
-                    if len(self.tiles_picked) == 0:
-                        for client_socket in self.players.keys():
-                            self.player_actions[client_socket] = {'game_over': True}
-                        self.game_over = True
-                    else:
-                        # send action to place
-                        for client_socket in self.players.keys():
-                            for tile in self.tiles_picked:
-                                if tile[1] == self.player_colors[client_socket]:
-                                    self.player_actions[client_socket] = {'place': tile[0]}
-                                    break
-
-                        self.tiles_picked = []
-
-                else:
-                    self.player_actions[self.player_order[0]] = {"pick": [0, 1, 2, 3]}
+            else:  # if there are still tiles to pick, the next player needs to pick
+                self.actions.append((self.player_order[0], 'pick', [0, 1, 2, 3]))
